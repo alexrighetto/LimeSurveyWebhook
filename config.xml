@@ -3,19 +3,17 @@
     <metadata>
         <name>LimeSurveyWebhook</name>
         <type>plugin</type>
-        <creationDate>2023-08-26</creationDate>
-        <lastUpdate>2023-08-26</lastUpdate>
-        <author>Stefan Verweij | Evently, IrishWolf</author>
-        <version>1.0.0</version>
-        <lastSecurityUpdate>1.0.0</lastSecurityUpdate>
-        <license>-</license>
-        <description>simple Webhook for LimeSurvey</description>
+        <creationDate>2025-05-03</creationDate>
+        <lastUpdate>2025-05-03</lastUpdate>
+        <author>Alex Righetto</author>
+        <version>1.1.0</version>
+        <lastSecurityUpdate>1.1.0</lastSecurityUpdate>
+        <license></license>
+        <description>Simple Webhook for LimeSurvey by Alex Righetto</description>
     </metadata>
-
-	<compatibility>
+    <compatibility>
         <version>6</version>
     </compatibility>
-
     <updaters disabled="disabled">
     </updaters>
 </config>
