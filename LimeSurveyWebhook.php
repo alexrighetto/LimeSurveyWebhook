@@ -57,8 +57,13 @@ class LimeSurveyWebhook extends PluginBase
         $oEvent = $this->getEvent();
         $surveyId = $oEvent->get('surveyId');
         $hookSurveyId = $this->get('sId', null, null, $this->settings['sId']);
-        $hookSurveyIdArray = explode(',', preg_replace('/\s+/', '', $hookSurveyId));
 
+        // Se è già array, usalo così. Se è stringa, trasformala in array.
+        if (is_array($hookSurveyId)) {
+            $hookSurveyIdArray = array_map('trim', $hookSurveyId);
+        } else {
+            $hookSurveyIdArray = explode(',', preg_replace('/\s+/', '', $hookSurveyId));
+        }
         if (in_array($surveyId, $hookSurveyIdArray)) {
             $this->callWebhook('afterSurveyComplete');
         }
@@ -66,35 +71,53 @@ class LimeSurveyWebhook extends PluginBase
     }
 
     private function callWebhook($comment)
-    {
-        $time_start = microtime(true);
-        $event = $this->getEvent();
-        $surveyId = $event->get('surveyId');
-        $responseId = $event->get('responseId');
+{
+    $time_start = microtime(true);
+    $event = $this->getEvent();
+    $surveyId = $event->get('surveyId');
+    $responseId = $event->get('responseId');
 
-        $response = $this->pluginManager->getAPI()->getResponse($surveyId, $responseId);
-        $submitDate = $response['submitdate'];
+    $response = $this->pluginManager->getAPI()->getResponse($surveyId, $responseId);
+    $submitDate = $response['submitdate'];
 
-        $url = $this->get('sUrl', null, null, $this->settings['sUrl']);
-        $auth = $this->get('sAuthToken', null, null, $this->settings['sAuthToken']);
-
-        $parameters = array(
-            "api_token" => $auth,
-            "survey" => $surveyId,
-            "event" => $comment,
-            "respondId" => $responseId,
-            "response" => $response,
-            "submitDate" => $submitDate,
-            "token" => isset($response['token']) ? $response['token'] : null
-        );
-
-        $hookSent = $this->httpPost($url, $parameters);
-
-        $this->log($comment . " | Params: " . json_encode($parameters) . json_encode($hookSent));
-        $this->debug($url, $parameters, $hookSent, $time_start, $response, $comment);
-
-        return;
+    // Correzione della data se vuota o default
+    if (empty($submitDate) || $submitDate == '1980-01-01 00:00:00') {
+        $submitDate = date('Y-m-d H:i:s');
     }
+
+    // Prendi il token
+    $token = isset($response['token']) ? $response['token'] : null;
+
+    // Recupera i dati del partecipante (se esiste un token)
+    $participant = null;
+    if (!empty($token)) {
+        $query = "SELECT firstname, lastname, email FROM {{tokens_$surveyId}} WHERE token = :token LIMIT 1";
+        $participant = Yii::app()->db->createCommand($query)
+            ->bindParam(":token", $token, PDO::PARAM_STR)
+            ->queryRow();
+    }
+
+    $url = $this->get('sUrl', null, null, $this->settings['sUrl']);
+    $auth = $this->get('sAuthToken', null, null, $this->settings['sAuthToken']);
+
+    $parameters = array(
+        "api_token" => $auth,
+        "survey" => $surveyId,
+        "event" => $comment,
+        "respondId" => $responseId,
+        "response" => $response,
+        "submitDate" => $submitDate,
+        "token" => $token,
+        "participant" => $participant
+    );
+
+    $hookSent = $this->httpPost($url, $parameters);
+
+    $this->log($comment . " | Params: " . json_encode($parameters) . json_encode($hookSent));
+    $this->debug($url, $parameters, $hookSent, $time_start, $response, $comment);
+
+    return;
+}
 
     private function httpPost($url, $params)
     {
