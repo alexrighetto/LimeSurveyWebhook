@@ -1,20 +1,18 @@
 <?php
 
 /***** ***** ***** ***** *****
-* Send a curl post request after each afterSurveyComplete event
+* Send a JSON POST request after each afterSurveyComplete event
 *
 * @originalauthor Stefan Verweij <stefan@evently.nl>
 * @copyright 2016 Evently
-* @author IrishWolf
-* @copyright 2023 Nerds Go Casual e.V.
-* @license GPL v3
-* @version 1.0.0
+* @author IrishWolf, updated by Alex Righetto
+* @version 1.1.0
 ***** ***** ***** ***** *****/
 
 class LimeSurveyWebhook extends PluginBase
 {
     protected $storage = 'DbStorage';
-    static protected $description = 'A simple Webhook for LimeSurvey';
+    static protected $description = 'A simple Webhook for LimeSurvey (JSON payload)';
     static protected $name = 'LimeSurveyWebhook';
     protected $surveyId;
 
@@ -64,71 +62,70 @@ class LimeSurveyWebhook extends PluginBase
         } else {
             $hookSurveyIdArray = explode(',', preg_replace('/\s+/', '', $hookSurveyId));
         }
+
         if (in_array($surveyId, $hookSurveyIdArray)) {
             $this->callWebhook('afterSurveyComplete');
         }
-        return;
     }
 
     private function callWebhook($comment)
-{
-    $time_start = microtime(true);
-    $event = $this->getEvent();
-    $surveyId = $event->get('surveyId');
-    $responseId = $event->get('responseId');
-
-    $response = $this->pluginManager->getAPI()->getResponse($surveyId, $responseId);
-    $submitDate = $response['submitdate'];
-
-    // Correzione della data se vuota o default
-    if (empty($submitDate) || $submitDate == '1980-01-01 00:00:00') {
-        $submitDate = date('Y-m-d H:i:s');
-    }
-
-    // Prendi il token
-    $token = isset($response['token']) ? $response['token'] : null;
-
-    // Recupera i dati del partecipante (se esiste un token)
-    $participant = null;
-    if (!empty($token)) {
-        $query = "SELECT firstname, lastname, email FROM {{tokens_$surveyId}} WHERE token = :token LIMIT 1";
-        $participant = Yii::app()->db->createCommand($query)
-            ->bindParam(":token", $token, PDO::PARAM_STR)
-            ->queryRow();
-    }
-
-    $url = $this->get('sUrl', null, null, $this->settings['sUrl']);
-    $auth = $this->get('sAuthToken', null, null, $this->settings['sAuthToken']);
-
-    $parameters = array(
-        "api_token" => $auth,
-        "survey" => $surveyId,
-        "event" => $comment,
-        "respondId" => $responseId,
-        "response" => $response,
-        "submitDate" => $submitDate,
-        "token" => $token,
-        "participant" => $participant
-    );
-
-    $hookSent = $this->httpPost($url, $parameters);
-
-    $this->log($comment . " | Params: " . json_encode($parameters) . json_encode($hookSent));
-    $this->debug($url, $parameters, $hookSent, $time_start, $response, $comment);
-
-    return;
-}
-
-    private function httpPost($url, $params)
     {
-        $postData = $params;
+        $time_start = microtime(true);
+        $event = $this->getEvent();
+        $surveyId = $event->get('surveyId');
+        $responseId = $event->get('responseId');
+
+        $response = $this->pluginManager->getAPI()->getResponse($surveyId, $responseId);
+        $submitDate = $response['submitdate'];
+
+        // Correzione della data se vuota o default
+        if (empty($submitDate) || $submitDate == '1980-01-01 00:00:00') {
+            $submitDate = date('Y-m-d H:i:s');
+        }
+
+        // Prendi il token
+        $token = isset($response['token']) ? $response['token'] : null;
+
+        // Recupera i dati del partecipante (se esiste un token)
+        $participant = null;
+        if (!empty($token)) {
+            $query = "SELECT firstname, lastname, email FROM {{tokens_$surveyId}} WHERE token = :token LIMIT 1";
+            $participant = Yii::app()->db->createCommand($query)
+                ->bindParam(":token", $token, PDO::PARAM_STR)
+                ->queryRow();
+        }
+
+        $url = $this->get('sUrl', null, null, $this->settings['sUrl']);
+        $auth = $this->get('sAuthToken', null, null, $this->settings['sAuthToken']);
+
+        $parameters = array(
+            "api_token" => $auth,
+            "survey" => $surveyId,
+            "event" => $comment,
+            "respondId" => $responseId,
+            "response" => $response,
+            "submitDate" => $submitDate,
+            "token" => $token,
+            "participant" => $participant
+        );
+
+        // Invia come JSON pulito
+        $payload = json_encode($parameters);
+        $hookSent = $this->httpPost($url, $payload);
+
+        $this->log($comment . " | JSON Payload: " . $payload . " | Response: " . $hookSent);
+        $this->debug($url, $parameters, $hookSent, $time_start, $response, $comment);
+    }
+
+    private function httpPost($url, $jsonPayload)
+    {
         $ch = curl_init();
         curl_setopt($ch, CURLOPT_URL, $url);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_HEADER, false);
         curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, $postData);
-        // Consigliato: verifica SSL in produzione
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $jsonPayload);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, array('Content-Type: application/json'));
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
 
         $output = curl_exec($ch);
@@ -144,9 +141,10 @@ class LimeSurveyWebhook extends PluginBase
         if ($this->get('sBug', null, null, $this->settings['sBug']) == 1) {
             $this->log($comment);
             $html = '<pre><br><br>----------------------------- DEBUG ----------------------------- <br><br>';
-            $html .= 'Parameters: <br>' . print_r($parameters, true);
+            $html .= 'Parameters: <br>' . htmlspecialchars(json_encode($parameters, JSON_PRETTY_PRINT));
             $html .= "<br><br> ----------------------------- <br><br>";
             $html .= 'Hook sent to: ' . htmlspecialchars($url) . '<br>';
+            $html .= 'Response: ' . htmlspecialchars($hookSent) . '<br>';
             $html .= 'Total execution time in seconds: ' . (microtime(true) - $time_start);
             $html .= '</pre>';
             $event = $this->getEvent();
