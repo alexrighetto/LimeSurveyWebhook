@@ -5,14 +5,14 @@
 *
 * @originalauthor Stefan Verweij <stefan@evently.nl>
 * @copyright 2016 Evently
-* @author IrishWolf, updated by Alex Righetto
-* @version 1.2.0
+* @author IrishWolf, updated by Alex Righetto!
+* @version 2.0.0
 ***** ***** ***** ***** *****/
 
 class LimeSurveyWebhook extends PluginBase
 {
     protected $storage = 'DbStorage';
-    static protected $description = 'A simple Webhook for LimeSurvey (JSON payload)';
+    static protected $description = 'Webhook for LimeSurvey (JSON payload with pretty answers)';
     static protected $name = 'LimeSurveyWebhook';
     protected $surveyId;
 
@@ -56,6 +56,7 @@ class LimeSurveyWebhook extends PluginBase
         $surveyId = $oEvent->get('surveyId');
         $hookSurveyId = $this->get('sId', null, null, $this->settings['sId']);
 
+        // Se è già array, usalo così. Se è stringa, trasformala in array.
         if (is_array($hookSurveyId)) {
             $hookSurveyIdArray = array_map('trim', $hookSurveyId);
         } else {
@@ -67,158 +68,60 @@ class LimeSurveyWebhook extends PluginBase
         }
     }
 
-private function callWebhook($comment)
-{
-    $time_start = microtime(true);
-    $event = $this->getEvent();
-    $surveyId = $event->get('surveyId');
-    $responseId = $event->get('responseId');
+    private function callWebhook($comment)
+    {
+        $time_start = microtime(true);
+        $event = $this->getEvent();
+        $surveyId = $event->get('surveyId');
+        $responseId = $event->get('responseId');
 
-    $response = $this->pluginManager->getAPI()->getResponse($surveyId, $responseId);
-    $submitDate = $response['submitdate'];
+        // Risposte grezze
+        $response = $this->pluginManager->getAPI()->getResponse($surveyId, $responseId);
+        $submitDate = $response['submitdate'];
 
-    // Correzione data
-    if (empty($submitDate) || $submitDate == '1980-01-01 00:00:00') {
-        $submitDate = date('Y-m-d H:i:s');
-    }
-
-    // Prendi il token
-    $token = isset($response['token']) ? $response['token'] : null;
-
-    // Recupera dati partecipante
-    $participant = null;
-    if (!empty($token)) {
-        $query = "SELECT firstname, lastname, email FROM {{tokens_$surveyId}} WHERE token = :token LIMIT 1";
-        $participant = Yii::app()->db->createCommand($query)
-            ->bindParam(":token", $token, PDO::PARAM_STR)
-            ->queryRow();
-    }
-
-    // ---  Recupera tutte le domande e sotto-domande per il survey
-    $questionsRaw = Yii::app()->db->createCommand()
-        ->select('*')
-        ->from('{{questions}}')
-        ->where('sid = :sid', array(':sid' => $surveyId))
-        ->queryAll();
-
-    // ---  Costruisce la mappa domanda -> risposte
-    $questions = [];
-    foreach ($questionsRaw as $q) {
-        if (!isset($questions[$q['parent_qid']])) {
-            $questions[$q['parent_qid']] = [];
-        }
-        $questions[$q['parent_qid']][] = $q;
-    }
-
-    // ---  Crea la lista leggibile delle risposte date
-    $answersReadable = [];
-
-    foreach ($response as $code => $value) {
-        // Skip campi di sistema
-        if (in_array($code, ['id', 'token', 'submitdate', 'startlanguage', 'seed', 'startdate', 'datestamp', 'ipaddr', 'refurl', 'lastpage'])) {
-            continue;
+        if (empty($submitDate) || $submitDate == '1980-01-01 00:00:00') {
+            $submitDate = date('Y-m-d H:i:s');
         }
 
-        if ($value === '' || $value === null) {
-            continue; // Non risposto
+        // Prendi il token
+        $token = isset($response['token']) ? $response['token'] : null;
+
+        // Partecipante (se esiste un token)
+        $participant = null;
+        if (!empty($token)) {
+            $query = "SELECT firstname, lastname, email FROM {{tokens_$surveyId}} WHERE token = :token LIMIT 1";
+            $participant = Yii::app()->db->createCommand($query)
+                ->bindParam(":token", $token, PDO::PARAM_STR)
+                ->queryRow();
         }
 
-        // Trova la domanda padre
-        $questionText = null;
-        $answerText = null;
+        $url = $this->get('sUrl', null, null, $this->settings['sUrl']);
+        $auth = $this->get('sAuthToken', null, null, $this->settings['sAuthToken']);
 
-        // Se il campo è tipo "G1Q00001_SQ001" (subquestion)
-        if (preg_match('/^([A-Z0-9]+)(_SQ[0-9]+)?(_[0-9]+)?$/', $code, $matches)) {
+        // ======= AGGIUNTA IMPORTANTE: recupero risposte "pretty" =========
+        Yii::import('application.helpers.export_helper');
+        $language = $response['startlanguage'] ?? 'en';
+        $responsePretty = responseExportData($surveyId, $language, $responseId);
 
-            $questionCode = $matches[1];
-            $subCode = isset($matches[2]) ? substr($matches[2], 1) : null; // SQ001 -> 001
-            $rankCode = isset($matches[3]) ? substr($matches[3], 1) : null; // per ranking (non usato ora)
+        $parameters = array(
+            "api_token" => $auth,
+            "survey" => $surveyId,
+            "event" => $comment,
+            "respondId" => $responseId,
+            "response" => $response,               // Risposte grezze
+            "response_pretty" => $responsePretty,   // Risposte leggibili
+            "submitDate" => $submitDate,
+            "token" => $token,
+            "participant" => $participant
+        );
 
-            // Trova domanda principale
-            $mainQuestion = null;
-            foreach ($questions[0] as $q) {
-                if ($q['question_code'] == $questionCode) {
-                    $mainQuestion = $q;
-                    break;
-                }
-            }
+        // JSON pulito
+        $payload = json_encode($parameters);
+        $hookSent = $this->httpPost($url, $payload);
 
-            if (!$mainQuestion) {
-                continue; // Codice domanda non trovato
-            }
-
-            $questionText = $mainQuestion['question_text'];
-
-            // Se ha subquestion
-            if ($subCode) {
-                $subQuestion = null;
-                foreach ($questions[$mainQuestion['qid']] as $sq) {
-                    if ($sq['question_code'] == 'SQ' . $subCode) {
-                        $subQuestion = $sq;
-                        break;
-                    }
-                }
-                if ($subQuestion) {
-                    $answerText = $subQuestion['question_text'];
-                } else {
-                    $answerText = $value; // fallback
-                }
-
-            } elseif (preg_match('/^SQ[0-9]+$/', $value)) {
-                // Caso ranking o codice selezionato (es: SQ045)
-                $subQuestion = null;
-                foreach ($questions[$mainQuestion['qid']] as $sq) {
-                    if ($sq['question_code'] == $value) {
-                        $subQuestion = $sq;
-                        break;
-                    }
-                }
-                if ($subQuestion) {
-                    $answerText = $subQuestion['question_text'];
-                } else {
-                    $answerText = $value;
-                }
-
-            } else {
-                // Domanda con risposta aperta o yes/no
-                if ($value == 'Y') {
-                    $answerText = "Yes";
-                } elseif ($value == 'N') {
-                    $answerText = "No";
-                } else {
-                    $answerText = $value;
-                }
-            }
-
-            // --- Aggiungi alla lista finale
-            $answersReadable[] = [
-                'question' => $questionText,
-                'answer' => $answerText
-            ];
-        }
+        $this->log($comment . " | JSON Payload: " . $payload . " | Response: " . $hookSent);
+        $this->debug($url, $parameters, $hookSent, $time_start, $response, $comment);
     }
-
-    // ---  Prepara il JSON finale
-    $url = $this->get('sUrl', null, null, $this->settings['sUrl']);
-    $auth = $this->get('sAuthToken', null, null, $this->settings['sAuthToken']);
-
-    $parameters = array(
-        "api_token" => $auth,
-        "survey" => $surveyId,
-        "event" => $comment,
-        "respondId" => $responseId,
-        "submitDate" => $submitDate,
-        "token" => $token,
-        "participant" => $participant,
-        "answers" => $answersReadable
-    );
-
-    $payload = json_encode($parameters, JSON_PRETTY_PRINT);
-    $hookSent = $this->httpPost($url, $payload);
-
-    $this->log($comment . " | JSON Payload: " . $payload . " | Response: " . $hookSent);
-    $this->debug($url, $parameters, $hookSent, $time_start, $response, $comment);
-}
 
     private function httpPost($url, $jsonPayload)
     {
