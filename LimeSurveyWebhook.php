@@ -1,20 +1,10 @@
 <?php
 
-/***** ***** ***** ***** *****
-* Send a JSON POST request after each afterSurveyComplete event
-*
-* @originalauthor Stefan Verweij <stefan@evently.nl>
-* @copyright 2016 Evently
-* @author IrishWolf, updated by Alex Righetto!
-* @version 2.1.1 (con import fix per SurveyResponseExporter)
-***** ***** ***** ***** *****/
-
 class LimeSurveyWebhook extends PluginBase
 {
     protected $storage = 'DbStorage';
     static protected $description = 'Webhook for LimeSurvey (JSON payload with pretty answers)';
     static protected $name = 'LimeSurveyWebhook';
-    protected $surveyId;
 
     public function init()
     {
@@ -45,8 +35,7 @@ class LimeSurveyWebhook extends PluginBase
                 1 => 'Yes'
             ),
             'default' => 0,
-            'label' => 'Enable Debug Mode',
-            'help' => 'Enable debug mode to see what data is transmitted.'
+            'label' => 'Enable Debug Mode'
         )
     );
 
@@ -56,12 +45,7 @@ class LimeSurveyWebhook extends PluginBase
         $surveyId = $oEvent->get('surveyId');
         $hookSurveyId = $this->get('sId', null, null, $this->settings['sId']);
 
-        // Controllo se il survey è tra quelli selezionati
-        if (is_array($hookSurveyId)) {
-            $hookSurveyIdArray = array_map('trim', $hookSurveyId);
-        } else {
-            $hookSurveyIdArray = explode(',', preg_replace('/\s+/', '', $hookSurveyId));
-        }
+        $hookSurveyIdArray = is_array($hookSurveyId) ? array_map('trim', $hookSurveyId) : explode(',', preg_replace('/\s+/', '', $hookSurveyId));
 
         if (in_array($surveyId, $hookSurveyIdArray)) {
             $this->callWebhook('afterSurveyComplete');
@@ -75,18 +59,17 @@ class LimeSurveyWebhook extends PluginBase
         $surveyId = $event->get('surveyId');
         $responseId = $event->get('responseId');
 
-        // Risposte grezze
+        // Risposta grezza
         $response = $this->pluginManager->getAPI()->getResponse($surveyId, $responseId);
-        $submitDate = $response['submitdate'];
 
+        // Correggi submit date se mancante
+        $submitDate = $response['submitdate'];
         if (empty($submitDate) || $submitDate == '1980-01-01 00:00:00') {
             $submitDate = date('Y-m-d H:i:s');
         }
 
-        // Prendi il token
+        // Recupera token e dati partecipante se esistono
         $token = isset($response['token']) ? $response['token'] : null;
-
-        // Partecipante (se esiste un token)
         $participant = null;
         if (!empty($token)) {
             $query = "SELECT firstname, lastname, email FROM {{tokens_$surveyId}} WHERE token = :token LIMIT 1";
@@ -95,41 +78,41 @@ class LimeSurveyWebhook extends PluginBase
                 ->queryRow();
         }
 
-        $url = $this->get('sUrl', null, null, $this->settings['sUrl']);
-        $auth = $this->get('sAuthToken', null, null, $this->settings['sAuthToken']);
-
-        // ======= NUOVO METODO: recupero risposte "pretty" con SurveyResponseExporter =========
+        // ------ Mapping PRETTY ------
         $oSurvey = Survey::model()->findByPk($surveyId);
         $language = $response['startlanguage'] ?? $oSurvey->language;
 
-        // IMPORTANTE: carica la classe SurveyResponseExporter
-        Yii::import('application.libraries.export.SurveyResponseExporter');
+        Yii::import('application.helpers.export_helper');
 
-        // Usa il servizio ufficiale di export
-        $exporter = new \LimeSurvey\Export\SurveyResponseExporter(
-            $surveyId,
-            [$responseId],
-            $language,
-            'json',
-            'short',
-            'code'
-        );
+        // Crea fieldmap con etichette
+        $fieldMap = createFieldMap($oSurvey, 'full', false, false, $language);
 
-        $responsePretty = $exporter->exportResponses();
+        // Mappa le risposte
+        $responsePretty = [];
+        foreach ($response as $field => $value) {
+            if (isset($fieldMap[$field])) {
+                $questionText = $fieldMap[$field]['question'] ?? $field;
+                $responsePretty[$questionText] = $value;
+            }
+        }
+
+        // ------ Fine mapping ------
+
+        $url = $this->get('sUrl', null, null, $this->settings['sUrl']);
+        $auth = $this->get('sAuthToken', null, null, $this->settings['sAuthToken']);
 
         $parameters = array(
             "api_token" => $auth,
             "survey" => $surveyId,
             "event" => $comment,
             "respondId" => $responseId,
-            "response" => $response,               // Risposte grezze
-            "response_pretty" => $responsePretty,   // Risposte leggibili
+            "response" => $response,
+            "response_pretty" => $responsePretty,
             "submitDate" => $submitDate,
             "token" => $token,
             "participant" => $participant
         );
 
-        // JSON pulito
         $payload = json_encode($parameters);
         $hookSent = $this->httpPost($url, $payload);
 
@@ -159,13 +142,11 @@ class LimeSurveyWebhook extends PluginBase
     private function debug($url, $parameters, $hookSent, $time_start, $response, $comment)
     {
         if ($this->get('sBug', null, null, $this->settings['sBug']) == 1) {
-            $this->log($comment);
-            $html = '<pre><br><br>----------------------------- DEBUG ----------------------------- <br><br>';
-            $html .= 'Parameters: <br>' . htmlspecialchars(json_encode($parameters, JSON_PRETTY_PRINT));
-            $html .= "<br><br> ----------------------------- <br><br>";
-            $html .= 'Hook sent to: ' . htmlspecialchars($url) . '<br>';
-            $html .= 'Response: ' . htmlspecialchars($hookSent) . '<br>';
-            $html .= 'Total execution time in seconds: ' . (microtime(true) - $time_start);
+            $html = '<pre><br>---------------- DEBUG ---------------- <br>';
+            $html .= 'Payload: <br>' . htmlspecialchars(json_encode($parameters, JSON_PRETTY_PRINT));
+            $html .= '<br>Hook URL: ' . htmlspecialchars($url);
+            $html .= '<br>Response: ' . htmlspecialchars($hookSent);
+            $html .= '<br>Execution time: ' . (microtime(true) - $time_start) . 's';
             $html .= '</pre>';
             $event = $this->getEvent();
             $event->getContent($this)->addContent($html);
