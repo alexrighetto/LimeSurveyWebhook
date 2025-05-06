@@ -6,7 +6,7 @@
 * @originalauthor Stefan Verweij <stefan@evently.nl>
 * @copyright 2016 Evently
 * @author IrishWolf, updated by Alex Righetto!
-* @version 2.1.0 (aggiornato con SurveyResponseExporter)
+* @version 2.1.1 (con import fix per SurveyResponseExporter)
 ***** ***** ***** ***** *****/
 
 class LimeSurveyWebhook extends PluginBase
@@ -101,6 +101,9 @@ class LimeSurveyWebhook extends PluginBase
         // ======= NUOVO METODO: recupero risposte "pretty" con SurveyResponseExporter =========
         $oSurvey = Survey::model()->findByPk($surveyId);
         $language = $response['startlanguage'] ?? $oSurvey->language;
+
+        // IMPORTANTE: carica la classe SurveyResponseExporter
+        Yii::import('application.libraries.export.SurveyResponseExporter');
 
         // Usa il servizio ufficiale di export
         $exporter = new \LimeSurvey\Export\SurveyResponseExporter(
