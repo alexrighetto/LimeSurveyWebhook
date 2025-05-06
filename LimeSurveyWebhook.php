@@ -6,7 +6,7 @@
 * @originalauthor Stefan Verweij <stefan@evently.nl>
 * @copyright 2016 Evently
 * @author IrishWolf, updated by Alex Righetto!
-* @version 2.0.0
+* @version 2.1.0 (aggiornato con SurveyResponseExporter)
 ***** ***** ***** ***** *****/
 
 class LimeSurveyWebhook extends PluginBase
@@ -51,46 +51,25 @@ class LimeSurveyWebhook extends PluginBase
     );
 
     public function afterSurveyComplete()
-{
-    Yii::import('application.helpers.export_helper');
-    require_once APPPATH . 'helpers/export_helper.php';
+    {
+        $oEvent = $this->getEvent();
+        $surveyId = $oEvent->get('surveyId');
+        $hookSurveyId = $this->get('sId', null, null, $this->settings['sId']);
 
-    $oEvent = $this->getEvent();
-    $surveyId = $oEvent->get('surveyId');
-    $hookSurveyId = $this->get('sId', null, null, $this->settings['sId']);
+        // Controllo se il survey è tra quelli selezionati
+        if (is_array($hookSurveyId)) {
+            $hookSurveyIdArray = array_map('trim', $hookSurveyId);
+        } else {
+            $hookSurveyIdArray = explode(',', preg_replace('/\s+/', '', $hookSurveyId));
+        }
 
-    // Controllo se il survey è quello giusto
-    if (is_array($hookSurveyId)) {
-        $hookSurveyIdArray = array_map('trim', $hookSurveyId);
-    } else {
-        $hookSurveyIdArray = explode(',', preg_replace('/\s+/', '', $hookSurveyId));
+        if (in_array($surveyId, $hookSurveyIdArray)) {
+            $this->callWebhook('afterSurveyComplete');
+        }
     }
-
-    if (in_array($surveyId, $hookSurveyIdArray)) {
-
-        // Qui raccogli le risposte in formato pulito con le etichette
-        $responseId = $oEvent->get('response')['id']; // L'ID della risposta appena salvata
-        $oSurvey = Survey::model()->findByPk($surveyId);
-
-        $responseData = responseExportData(
-            $surveyId,
-            [$responseId],
-            $oSurvey->language,
-            'json',     // formato export
-            'short',    // head format (short o full)
-            'code'      // valore delle risposte in "code"
-        );
-
-        $this->debugVar($responseData); // Vedrai l'output nel debug log
-
-        // E poi chiami il webhook normalmente
-        $this->callWebhook('afterSurveyComplete');
-    }
-}
 
     private function callWebhook($comment)
     {
-      
         $time_start = microtime(true);
         $event = $this->getEvent();
         $surveyId = $event->get('surveyId');
@@ -119,12 +98,12 @@ class LimeSurveyWebhook extends PluginBase
         $url = $this->get('sUrl', null, null, $this->settings['sUrl']);
         $auth = $this->get('sAuthToken', null, null, $this->settings['sAuthToken']);
 
-        // ======= AGGIUNTA IMPORTANTE: recupero risposte "pretty" =========
-        Yii::import('application.helpers.export_helper');
-        require_once APPPATH . 'helpers/export_helper.php';
-        
-        $language = $response['startlanguage'] ?? 'en';
-        $responsePretty = responseExportData(
+        // ======= NUOVO METODO: recupero risposte "pretty" con SurveyResponseExporter =========
+        $oSurvey = Survey::model()->findByPk($surveyId);
+        $language = $response['startlanguage'] ?? $oSurvey->language;
+
+        // Usa il servizio ufficiale di export
+        $exporter = new \LimeSurvey\Export\SurveyResponseExporter(
             $surveyId,
             [$responseId],
             $language,
@@ -132,6 +111,8 @@ class LimeSurveyWebhook extends PluginBase
             'short',
             'code'
         );
+
+        $responsePretty = $exporter->exportResponses();
 
         $parameters = array(
             "api_token" => $auth,
