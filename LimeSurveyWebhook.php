@@ -12,7 +12,7 @@
 class LimeSurveyWebhook extends PluginBase
 {
     protected $storage = 'DbStorage';
-    static protected $description = 'A simple Webhook for LimeSurvey (JSON payload with questions text)';
+    static protected $description = 'A simple Webhook for LimeSurvey (JSON payload)';
     static protected $name = 'LimeSurveyWebhook';
     protected $surveyId;
 
@@ -56,7 +56,6 @@ class LimeSurveyWebhook extends PluginBase
         $surveyId = $oEvent->get('surveyId');
         $hookSurveyId = $this->get('sId', null, null, $this->settings['sId']);
 
-        // Se è già array, usalo così. Se è stringa, trasformala in array.
         if (is_array($hookSurveyId)) {
             $hookSurveyIdArray = array_map('trim', $hookSurveyId);
         } else {
@@ -78,15 +77,15 @@ class LimeSurveyWebhook extends PluginBase
         $response = $this->pluginManager->getAPI()->getResponse($surveyId, $responseId);
         $submitDate = $response['submitdate'];
 
-        // Correzione della data se vuota o default
+        // Correzione data
         if (empty($submitDate) || $submitDate == '1980-01-01 00:00:00') {
             $submitDate = date('Y-m-d H:i:s');
         }
 
-        // Prendi il token
+        // Token
         $token = isset($response['token']) ? $response['token'] : null;
 
-        // Recupera i dati del partecipante (se esiste un token)
+        // Dati partecipante
         $participant = null;
         if (!empty($token)) {
             $query = "SELECT firstname, lastname, email FROM {{tokens_$surveyId}} WHERE token = :token LIMIT 1";
@@ -95,8 +94,41 @@ class LimeSurveyWebhook extends PluginBase
                 ->queryRow();
         }
 
-        // Recupera le domande col testo
-        $questions = $this->getSurveyQuestions($surveyId, 'en'); // Lingua: en
+        // Recupera le domande e le opzioni
+        $sql = "SELECT q.qid, q.sid, q.parent_qid, q.type, q.title AS question_code, ql.question AS question_text, ql.language
+                FROM {{questions}} q 
+                LEFT JOIN {{question_l10ns}} ql ON q.qid = ql.qid 
+                WHERE q.sid = :surveyid";
+        $rows = Yii::app()->db->createCommand($sql)
+            ->bindParam(":surveyid", $surveyId, PDO::PARAM_INT)
+            ->queryAll();
+
+        $questions = [];
+        $choices = [];
+
+        foreach ($rows as $row) {
+            if ($row['parent_qid'] == 0) {
+                $questions[] = array(
+                    'qid' => $row['qid'],
+                    'sid' => $row['sid'],
+                    'parent_qid' => $row['parent_qid'],
+                    'type' => $row['type'],
+                    'question_code' => $row['question_code'],
+                    'question_text' => $row['question_text'],
+                    'language' => $row['language']
+                );
+            } else {
+                $choices[] = array(
+                    'qid' => $row['qid'],
+                    'sid' => $row['sid'],
+                    'parent_qid' => $row['parent_qid'],
+                    'type' => $row['type'],
+                    'answer_code' => $row['question_code'],
+                    'answer_text' => $row['question_text'],
+                    'language' => $row['language']
+                );
+            }
+        }
 
         $url = $this->get('sUrl', null, null, $this->settings['sUrl']);
         $auth = $this->get('sAuthToken', null, null, $this->settings['sAuthToken']);
@@ -107,43 +139,18 @@ class LimeSurveyWebhook extends PluginBase
             "event" => $comment,
             "respondId" => $responseId,
             "response" => $response,
-            "questions" => $questions,
             "submitDate" => $submitDate,
             "token" => $token,
-            "participant" => $participant
+            "participant" => $participant,
+            "questions" => $questions,
+            "choices" => $choices
         );
 
-        // Invia come JSON pulito
         $payload = json_encode($parameters);
         $hookSent = $this->httpPost($url, $payload);
 
         $this->log($comment . " | JSON Payload: " . $payload . " | Response: " . $hookSent);
         $this->debug($url, $parameters, $hookSent, $time_start, $response, $comment);
-    }
-
-    private function getSurveyQuestions($surveyid, $language)
-    {
-        $prefix = Yii::app()->db->tablePrefix;
-
-        $query = "
-            SELECT 
-                q.qid,
-                q.sid,
-                q.parent_qid,
-                q.type,
-                q.title AS question_code,
-                l.question AS question_text
-            FROM {$prefix}questions AS q
-            LEFT JOIN {$prefix}question_l10ns AS l
-                ON q.qid = l.qid AND l.language = :language
-            WHERE q.sid = :surveyid
-            ORDER BY q.qid ASC
-        ";
-
-        return Yii::app()->db->createCommand($query)
-            ->bindParam(":surveyid", $surveyid, PDO::PARAM_INT)
-            ->bindParam(":language", $language, PDO::PARAM_STR)
-            ->queryAll();
     }
 
     private function httpPost($url, $jsonPayload)
