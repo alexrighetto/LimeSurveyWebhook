@@ -6,13 +6,13 @@
 * @originalauthor Stefan Verweij <stefan@evently.nl>
 * @copyright 2016 Evently
 * @author IrishWolf, updated by Alex Righetto
-* @version 1.1.0
+* @version 1.2.0 - Enhanced with Question Titles
 ***** ***** ***** ***** *****/
 
 class LimeSurveyWebhook extends PluginBase
 {
     protected $storage = 'DbStorage';
-    static protected $description = 'A simple Webhook for LimeSurvey (JSON payload)';
+    static protected $description = 'A simple Webhook for LimeSurvey (JSON payload) with question titles';
     static protected $name = 'LimeSurveyWebhook';
     protected $surveyId;
 
@@ -75,24 +75,41 @@ class LimeSurveyWebhook extends PluginBase
         $surveyId = $event->get('surveyId');
         $responseId = $event->get('responseId');
 
+        // Risposte grezze
         $response = $this->pluginManager->getAPI()->getResponse($surveyId, $responseId);
         $submitDate = $response['submitdate'];
 
-        // Correzione della data se vuota o default
         if (empty($submitDate) || $submitDate == '1980-01-01 00:00:00') {
             $submitDate = date('Y-m-d H:i:s');
         }
 
-        // Prendi il token
+        // Token
         $token = isset($response['token']) ? $response['token'] : null;
 
-        // Recupera i dati del partecipante (se esiste un token)
+        // Partecipante
         $participant = null;
         if (!empty($token)) {
             $query = "SELECT firstname, lastname, email FROM {{tokens_$surveyId}} WHERE token = :token LIMIT 1";
             $participant = Yii::app()->db->createCommand($query)
                 ->bindParam(":token", $token, PDO::PARAM_STR)
                 ->queryRow();
+        }
+
+        // Recupera domande e testi
+        $questionTitles = $this->getQuestionsWithTitles($surveyId);
+
+        // Prepara risposte arricchite
+        $enrichedResponses = [];
+        foreach ($response as $code => $answer) {
+            if (in_array($code, ['submitdate', 'lastpage', 'seed', 'startlanguage', 'startdate', 'datestamp', 'ipaddr', 'refurl', 'token'])) {
+                continue; // Salta i metadati
+            }
+            $questionText = isset($questionTitles[$code]) ? $questionTitles[$code] : 'Unknown Question';
+            $enrichedResponses[] = [
+                'question_code' => $code,
+                'question_text' => $questionText,
+                'answer' => $answer
+            ];
         }
 
         $url = $this->get('sUrl', null, null, $this->settings['sUrl']);
@@ -103,18 +120,33 @@ class LimeSurveyWebhook extends PluginBase
             "survey" => $surveyId,
             "event" => $comment,
             "respondId" => $responseId,
-            "response" => $response,
+            "participant" => $participant,
             "submitDate" => $submitDate,
-            "token" => $token,
-            "participant" => $participant
+            "answers" => $enrichedResponses
         );
 
-        // Invia come JSON pulito
+        // JSON e invio
         $payload = json_encode($parameters);
         $hookSent = $this->httpPost($url, $payload);
 
         $this->log($comment . " | JSON Payload: " . $payload . " | Response: " . $hookSent);
         $this->debug($url, $parameters, $hookSent, $time_start, $response, $comment);
+    }
+
+    private function getQuestionsWithTitles($surveyId)
+    {
+        $questions = Yii::app()->db->createCommand()
+            ->select('title, question, question_order')
+            ->from('{{questions}}')
+            ->where('sid=:sid', array(':sid' => $surveyId))
+            ->order('question_order ASC')
+            ->queryAll();
+
+        $result = [];
+        foreach ($questions as $q) {
+            $result[$q['title']] = strip_tags($q['question']);
+        }
+        return $result;
     }
 
     private function httpPost($url, $jsonPayload)
