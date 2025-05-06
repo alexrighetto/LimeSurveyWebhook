@@ -6,7 +6,7 @@
 * @originalauthor Stefan Verweij <stefan@evently.nl>
 * @copyright 2016 Evently
 * @author IrishWolf, updated by Alex Righetto
-* @version 1.2.0 (aggiornata da ChatGPT)
+* @version 1.2.0
 ***** ***** ***** ***** *****/
 
 class LimeSurveyWebhook extends PluginBase
