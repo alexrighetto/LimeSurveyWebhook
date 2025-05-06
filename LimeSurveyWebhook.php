@@ -51,25 +51,46 @@ class LimeSurveyWebhook extends PluginBase
     );
 
     public function afterSurveyComplete()
-    {
-        $oEvent = $this->getEvent();
-        $surveyId = $oEvent->get('surveyId');
-        $hookSurveyId = $this->get('sId', null, null, $this->settings['sId']);
+{
+    Yii::import('application.helpers.export_helper');
+    require_once APPPATH . 'helpers/export_helper.php';
 
-        // Se è già array, usalo così. Se è stringa, trasformala in array.
-        if (is_array($hookSurveyId)) {
-            $hookSurveyIdArray = array_map('trim', $hookSurveyId);
-        } else {
-            $hookSurveyIdArray = explode(',', preg_replace('/\s+/', '', $hookSurveyId));
-        }
+    $oEvent = $this->getEvent();
+    $surveyId = $oEvent->get('surveyId');
+    $hookSurveyId = $this->get('sId', null, null, $this->settings['sId']);
 
-        if (in_array($surveyId, $hookSurveyIdArray)) {
-            $this->callWebhook('afterSurveyComplete');
-        }
+    // Controllo se il survey è quello giusto
+    if (is_array($hookSurveyId)) {
+        $hookSurveyIdArray = array_map('trim', $hookSurveyId);
+    } else {
+        $hookSurveyIdArray = explode(',', preg_replace('/\s+/', '', $hookSurveyId));
     }
+
+    if (in_array($surveyId, $hookSurveyIdArray)) {
+
+        // Qui raccogli le risposte in formato pulito con le etichette
+        $responseId = $oEvent->get('response')['id']; // L'ID della risposta appena salvata
+        $oSurvey = Survey::model()->findByPk($surveyId);
+
+        $responseData = responseExportData(
+            $surveyId,
+            [$responseId],
+            $oSurvey->language,
+            'json',     // formato export
+            'short',    // head format (short o full)
+            'code'      // valore delle risposte in "code"
+        );
+
+        $this->debugVar($responseData); // Vedrai l'output nel debug log
+
+        // E poi chiami il webhook normalmente
+        $this->callWebhook('afterSurveyComplete');
+    }
+}
 
     private function callWebhook($comment)
     {
+      
         $time_start = microtime(true);
         $event = $this->getEvent();
         $surveyId = $event->get('surveyId');
@@ -100,8 +121,17 @@ class LimeSurveyWebhook extends PluginBase
 
         // ======= AGGIUNTA IMPORTANTE: recupero risposte "pretty" =========
         Yii::import('application.helpers.export_helper');
+        require_once APPPATH . 'helpers/export_helper.php';
+        
         $language = $response['startlanguage'] ?? 'en';
-        $responsePretty = responseExportData($surveyId, $language, $responseId);
+        $responsePretty = responseExportData(
+            $surveyId,
+            [$responseId],
+            $language,
+            'json',
+            'short',
+            'code'
+        );
 
         $parameters = array(
             "api_token" => $auth,
